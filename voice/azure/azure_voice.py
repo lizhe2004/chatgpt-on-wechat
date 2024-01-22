@@ -74,7 +74,9 @@ class AzureVoice(Voice):
             lang = classify(text)[0]
             key = "speech_synthesis_" + lang
             if key in self.config:
-                logger.info("[Azure] textToVoice auto detect language={}, voice={}".format(lang, self.config[key]))
+                #logger.info("[Azure] textToVoice auto detect language={}, voice={}".format(lang,  self.config[key]))
+                logger.info("[Azure] textToVoice auto detect language={}, voice={}".format(lang,  conf().get("azure_speech_synthesis_voice_name_" + lang)))
+                     
                 self.speech_config.speech_synthesis_voice_name =conf().get("azure_speech_synthesis_voice_name_" + lang)# self.config[key]
             else:
                 self.speech_config.speech_synthesis_voice_name = conf().get("azure_speech_synthesis_voice_name_zh") #self.config["speech_synthesis_voice_name"]
