@@ -51,7 +51,7 @@ class AzureVoice(Voice):
             self.api_key = conf().get("azure_voice_api_key")
             self.api_region = conf().get("azure_voice_region")
             self.speech_config = speechsdk.SpeechConfig(subscription=self.api_key, region=self.api_region)
-            self.speech_config.speech_synthesis_voice_name =  conf().get("azure_speech_synthesis_voice_name") #self.config["speech_synthesis_voice_name"]
+            self.speech_config.speech_synthesis_voice_name =  conf().get("azure_speech_synthesis_voice_name_zh") #self.config["speech_synthesis_voice_name"]
             self.speech_config.speech_recognition_language = self.config["speech_recognition_language"]
         except Exception as e:
             logger.warn("AzureVoice init failed: %s, ignore " % e)
@@ -75,11 +75,11 @@ class AzureVoice(Voice):
             key = "speech_synthesis_" + lang
             if key in self.config:
                 logger.info("[Azure] textToVoice auto detect language={}, voice={}".format(lang, self.config[key]))
-                self.speech_config.speech_synthesis_voice_name = self.config[key]
+                self.speech_config.speech_synthesis_voice_name =conf().get("azure_speech_synthesis_voice_name_" + lang)# self.config[key]
             else:
-                self.speech_config.speech_synthesis_voice_name = self.config["speech_synthesis_voice_name"]
+                self.speech_config.speech_synthesis_voice_name = conf().get("azure_speech_synthesis_voice_name_zh") #self.config["speech_synthesis_voice_name"]
         else:
-            self.speech_config.speech_synthesis_voice_name = self.config["speech_synthesis_voice_name"]
+            self.speech_config.speech_synthesis_voice_name = conf().get("azure_speech_synthesis_voice_name_zh")  #self.config["speech_synthesis_voice_name"]
         # Avoid the same filename under multithreading
         fileName = TmpDir().path() + "reply-" + str(int(time.time())) + "-" + str(hash(text) & 0x7FFFFFFF) + ".wav"
         audio_config = speechsdk.AudioConfig(filename=fileName)

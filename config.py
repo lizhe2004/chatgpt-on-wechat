@@ -44,7 +44,7 @@ available_setting = {
     # chatgpt会话参数
     "expires_in_seconds": 3600,  # 无操作会话的过期时间
     # 人格描述
-    "character_desc": "你是ChatGPT, 一个由OpenAI训练的大型语言模型, 你旨在回答并解决人们的任何问题，并且可以使用多种语言与人交流。",
+    "character_desc": "你是一个智能助手, 一个经过训练的大型语言模型, 你旨在回答并解决人们的任何问题，并且可以使用多种语言与人交流。",
     "conversation_max_tokens": 1000,  # 支持上下文记忆的最多字符数
     # chatgpt限流配置
     "rate_limit_chatgpt": 20,  # chatgpt的调用频率限制
@@ -95,7 +95,13 @@ available_setting = {
     # azure 语音api配置， 使用azure语音识别和语音合成时需要
     "azure_voice_api_key": "",
     "azure_voice_region": "japaneast",
-    "azure_speech_synthesis_voice_name":"zh-CN-XiaoyouNeural",
+    "azure_speech_synthesis_voice_name_zh":"zh-CN-XiaoyouNeural",
+    "azure_speech_synthesis_voice_name_en": "en-US-JacobNeural",
+    "azure_speech_synthesis_voice_name_ja": "ja-JP-AoiNeural",
+    "azure_speech_synthesis_voice_name_ko": "ko-KR-SoonBokNeural",
+    "azure_speech_synthesis_voice_name_de": "de-DE-LouisaNeural",
+    "azure_speech_synthesis_voice_name_fr": "fr-FR-BrigitteNeural",
+    "azure_speech_synthesis_voice_name_es": "es-ES-LaiaNeural",
     # elevenlabs 语音api配置
     "xi_api_key": "",    #获取ap的方法可以参考https://docs.elevenlabs.io/api-reference/quick-start/authentication
     "xi_voice_id": "",   #ElevenLabs提供了9种英式、美式等英语发音id，分别是“Adam/Antoni/Arnold/Bella/Domi/Elli/Josh/Rachel/Sam”
