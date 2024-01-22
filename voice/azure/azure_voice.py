@@ -51,7 +51,7 @@ class AzureVoice(Voice):
             self.api_key = conf().get("azure_voice_api_key")
             self.api_region = conf().get("azure_voice_region")
             self.speech_config = speechsdk.SpeechConfig(subscription=self.api_key, region=self.api_region)
-            self.speech_config.speech_synthesis_voice_name = self.config["speech_synthesis_voice_name"]
+            self.speech_config.speech_synthesis_voice_name =  conf().get("azure_speech_synthesis_voice_name") #self.config["speech_synthesis_voice_name"]
             self.speech_config.speech_recognition_language = self.config["speech_recognition_language"]
         except Exception as e:
             logger.warn("AzureVoice init failed: %s, ignore " % e)
