@@ -581,9 +581,20 @@ export interface ModelProvider {
   api_base?: string
   api_base_default?: string
   api_base_placeholder?: string
+  // The model catalog is an OVERLAY on the presets, not a replacement:
+  // - `catalog` is the user's raw overrides (edited/added entries),
+  // - `hidden` is the preset names the user removed (tombstones),
+  // - `seed` is the preset base (typed with real capabilities),
+  // - `effective` is the merged list (presets − hidden + overrides) the editor
+  //   loads and the chat switcher offers.
+  // A custom provider has no presets, so `catalog` is simply its whole list and
+  // `effective` equals it.
   catalog?: ModelCatalogEntry[]
+  hidden?: string[]
   /** Preset models pre-typed with their real capabilities (built-in vendors). */
   seed?: ModelCatalogEntry[]
+  /** The merged list the editor prefills (presets − hidden + overrides). */
+  effective?: ModelCatalogEntry[]
   models: ModelEntry[]
 }
 
@@ -691,6 +702,10 @@ export type ModelsAction =
   | { action: 'set_custom_provider'; name: string; id?: string; api_base: string; api_key?: string; model?: string; make_active?: boolean }
   | { action: 'delete_custom_provider'; id: string }
   | { action: 'set_active_custom_provider'; id: string }
+  // Persist a provider's model catalog overlay. `models` are the overrides
+  // (edited/added entries) and `hidden` the removed preset names; the backend
+  // drops the provider's overlay entirely when both are empty (back to presets).
+  | { action: 'save_catalog'; provider_id: string; models: ModelCatalogEntry[]; hidden: string[] }
   // `chat_fallback` is not a first-class CapabilityKey (it has no top-level
   // card), but it is persisted through the same set_capability action, so it
   // is accepted here alongside its opt-in fields.

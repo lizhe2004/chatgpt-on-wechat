@@ -100,7 +100,6 @@ const I18N = {
         models_catalog_add: '添加模型',
         models_catalog_window: '上下文窗口',
         models_catalog_output: '最大输出',
-        models_catalog_empty: '尚未添加模型，当前使用内置列表',
         models_catalog_no_budget: '该模型类型不区分上下文窗口与最大输出',
         models_catalog_custom_hint: '为自定义厂商添加模型列表，配置后可在对话页面下拉选择对应模型，留空则需要手动输入模型名称',
         models_catalog_name_ph: '模型名称',
@@ -611,7 +610,6 @@ const I18N = {
         models_catalog_add: '新增模型',
         models_catalog_window: '上下文窗口',
         models_catalog_output: '最大輸出',
-        models_catalog_empty: '尚未新增模型，目前使用內建清單',
         models_catalog_no_budget: '該模型類型不區分上下文視窗與最大輸出',
         models_catalog_custom_hint: '為自訂廠商新增模型列表，設定後可在對話頁面下拉選擇對應模型，留空則需手動輸入模型名稱',
         models_catalog_name_ph: '模型名稱',
@@ -1117,7 +1115,6 @@ const I18N = {
         models_catalog_add: 'Add model',
         models_catalog_window: 'Context window',
         models_catalog_output: 'Max output',
-        models_catalog_empty: 'No models added yet — the built-in list is in use',
         models_catalog_no_budget: 'Context window and max output do not apply to this model type',
         models_catalog_custom_hint: 'Add a model list for this custom provider so you can pick models from a dropdown on the chat page; leave empty to type the model name manually',
         models_catalog_name_ph: 'Model name',
@@ -12797,9 +12794,6 @@ function renderCatalogRows(prefix) {
                 </div>`;
             })()}
         </div>`).join('');
-
-    const empty = document.getElementById(prefix + '-catalog-empty');
-    if (empty) empty.classList.toggle('hidden', draft.length > 0);
 }
 
 function updateCatalogRow(prefix, idx, field, rawValue) {
@@ -12917,17 +12911,9 @@ function fillCatalogForProvider(prefix, providerId) {
     }));
     renderCatalogRows(prefix);
 
-    // A saved overlay (the effective list diverges from the presets) implies
-    // the user has already opted in — show it expanded. A pristine provider
-    // stays collapsed so credentials stay the focus.
-    const hasOverlay = !catalogDraftMatchesSeed(prefix);
-    setCatalogSectionOpen(prefix, hasOverlay);
-}
-
-/** True when the draft is byte-for-byte the provider's presets (no overlay). */
-function catalogDraftMatchesSeed(prefix) {
-    return JSON.stringify(collectCatalogPayload(prefix))
-        === JSON.stringify(_normalizeEntries(catalogSeeds[prefix] || []));
+    // Always start collapsed so credentials stay the focus — the catalog is an
+    // advanced, opt-in section the user expands deliberately.
+    setCatalogSectionOpen(prefix, false);
 }
 
 /** Normalize seed rows into the same payload shape collectCatalogPayload emits,
