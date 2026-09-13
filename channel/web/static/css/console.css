@@ -1129,6 +1129,12 @@
     box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.4);
 }
 .cfg-dropdown.open .cfg-dropdown-menu { display: block; }
+/* A dropdown inside a scrolling modal body (e.g. the "add vendor" provider
+   picker) would otherwise be clipped by the body's overflow-y-auto. While one
+   is open, let the body overflow so the menu can extend past it; the menu's own
+   max-height keeps it from running off the modal. */
+.modal-scroll-body:has(.cfg-dropdown.open) { overflow: visible; }
+.modal-scroll-body:has(.cfg-dropdown.open) .cfg-dropdown.open { z-index: 60; }
 /* When flipped, anchor the menu above the control so it isn't clipped at the
    bottom of the viewport (e.g. the last channel's config dropdown). */
 .cfg-dropdown.drop-up .cfg-dropdown-menu {

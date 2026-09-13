@@ -3608,6 +3608,7 @@ class ModelsHandler:
 
         meta = ConfigHandler.PROVIDER_MODELS.get("custom") or {}
         catalog_map = model_catalog.get_catalog_map()
+        hidden_map = model_catalog.get_hidden_map()
         cards = []
         for p in providers:
             pid = p.get("id") or ""
@@ -3619,6 +3620,8 @@ class ModelsHandler:
             # as configured once it has an api_base, so a keyless-but-valid
             # endpoint isn't shown as an unconfigured (greyed-out) vendor.
             configured = bool(raw_base) or cls._is_real_key(raw_key)
+            # A custom endpoint has no presets, so its overrides are its whole
+            # list and there is nothing to tombstone.
             catalog = catalog_map.get(f"custom:{pid}") or []
             cards.append({
                 "id": f"custom:{pid}",
@@ -3639,6 +3642,9 @@ class ModelsHandler:
                 "api_base_default": "",
                 "api_base_placeholder": meta.get("api_base_placeholder") or "",
                 "catalog": catalog,
+                "hidden": hidden_map.get(f"custom:{pid}") or [],
+                "seed": [],
+                "effective": catalog,
                 "models": ([e["name"] for e in catalog] if catalog
                            else ([p.get("model")] if p.get("model") else [])),
             })
@@ -3673,6 +3679,7 @@ class ModelsHandler:
         # filled, so existing single-provider setups never disappear from the UI.
         keep_legacy_custom = cls._legacy_custom_in_use(local_config)
         catalog_map = model_catalog.get_catalog_map()
+        hidden_map = model_catalog.get_hidden_map()
         items = []
         for pid, p in ConfigHandler.PROVIDER_MODELS.items():
             if pid == "custom" and custom_cards:
@@ -3686,7 +3693,13 @@ class ModelsHandler:
             raw_key = local_config.get(key_field, "") if key_field else ""
             raw_base = local_config.get(base_field, "") if base_field else ""
             configured = cls._is_real_key(raw_key)
-            catalog = catalog_map.get(pid) or []
+            overrides = catalog_map.get(pid) or []
+            hidden = hidden_map.get(pid) or []
+            seed = [] if pid == "custom" else cls._preset_seed(pid)
+            # The editor prefills from the effective list (presets minus
+            # removals, plus overrides), so the user always edits the full
+            # list — adding one model can no longer wipe the rest.
+            effective = cls._merged_catalog(pid, seed, catalog_map, hidden_map)
             items.append({
                 "id": pid,
                 "label": p["label"],
@@ -3698,12 +3711,17 @@ class ModelsHandler:
                 "api_base": raw_base or (p.get("api_base_default") or ""),
                 "api_base_default": p.get("api_base_default") or "",
                 "api_base_placeholder": p.get("api_base_placeholder") or "",
-                "catalog": catalog,
-                # Preset models pre-typed with their real capabilities, used
-                # by the catalog editor as seed rows (before the user saves
-                # an explicit catalog).
-                "seed": [] if pid == "custom" else cls._preset_seed(pid),
-                "models": [e["name"] for e in catalog] if catalog else list(p.get("models") or []),
+                # Raw stored overlay (overrides + tombstones), so the editor can
+                # tell what the user actually changed from the presets.
+                "catalog": overrides,
+                "hidden": hidden,
+                # Preset models pre-typed with their real capabilities: the base
+                # the editor diffs against and the "restore presets" reset uses.
+                "seed": seed,
+                # The full effective list the editor loads as its rows.
+                "effective": effective,
+                "models": [e["name"] for e in effective] if effective
+                          else list(p.get("models") or []),
             })
 
         def _sort_key(it):
@@ -4413,22 +4431,27 @@ class ModelsHandler:
 
     @classmethod
     def _apply_catalog(cls, presets: dict, capability, custom_cards=None) -> dict:
-        """Merge per-provider catalog overrides into a capability's model
-        list. A provider with a catalog offers its entries tagged with
-        `capability` ("text" for the main chat model). Providers without a
-        catalog keep the presets."""
+        """Layer per-provider catalog overlays onto a capability's model list.
+
+        A provider without any overlay keeps its presets untouched. When the
+        user has an overlay, the provider's effective list (preset base minus
+        tombstones, plus overrides) is filtered to `capability` ("text" for the
+        main chat model) so only models that can serve this role are offered."""
         merged = dict(presets)
         catalog_map = model_catalog.get_catalog_map()
+        hidden_map = model_catalog.get_hidden_map()
         ids = [pid for pid in list(merged.keys()) + list(ConfigHandler.PROVIDER_MODELS.keys())
                if pid != "custom"]
         ids += [c["id"] for c in (custom_cards or [])]
         for pid in dict.fromkeys(ids):  # dedupe, keep order
-            entries = catalog_map.get(pid)
-            if entries:
-                merged[pid] = [
-                    {"value": e["name"]} for e in entries
-                    if capability is None or capability in (e.get("capabilities") or [])
-                ]
+            if not catalog_map.get(pid) and not hidden_map.get(pid):
+                continue  # no overlay: presets stand as-is
+            base_seed = [] if pid.startswith("custom:") else cls._preset_seed(pid)
+            effective = cls._merged_catalog(pid, base_seed, catalog_map, hidden_map)
+            merged[pid] = [
+                {"value": e["name"]} for e in effective
+                if capability is None or capability in (e.get("capabilities") or [])
+            ]
         return merged
 
     # Researched specs (context window / max output) for built-in preset
@@ -4528,17 +4551,58 @@ class ModelsHandler:
         for cap, table in tables:
             for m in table.get(pid) or []:
                 add(m if isinstance(m, str) else m.get("value"), cap)
+        from agent.protocol.agent import resolve_family_spec
         for entry in merged.values():
-            extra = cls._PRESET_MODEL_META.get(entry["name"])
-            if not extra:
-                continue
+            extra = cls._PRESET_MODEL_META.get(entry["name"]) or {}
             for cap in extra.get("capabilities", []):
                 if cap not in entry["capabilities"]:
                     entry["capabilities"].append(cap)
-            if extra.get("context_window"):
-                entry["context_window"] = extra["context_window"]
-            if extra.get("max_output_tokens"):
-                entry["max_output_tokens"] = extra["max_output_tokens"]
+            # Explicit researched specs win; otherwise fall back to the runtime
+            # family table so the editor shows the same budget that actually
+            # takes effect (e.g. gpt-6-astra -> 1M/128K) instead of a blank.
+            fam_window, fam_output = resolve_family_spec(entry["name"])
+            window = extra.get("context_window") or fam_window
+            output = extra.get("max_output_tokens") or fam_output
+            if window:
+                entry["context_window"] = window
+            if output:
+                entry["max_output_tokens"] = output
+        return list(merged.values())
+
+    @classmethod
+    def _merged_catalog(cls, pid, base_seed=None, catalog_map=None, hidden_map=None) -> List[dict]:
+        """The provider's effective model list: preset base, minus removals,
+        with user overrides layered on.
+
+        The catalog is an overlay, not a replacement — a preset the user never
+        touched stays on the list (and keeps following the code-side metadata),
+        an overridden preset takes the user's values, a tombstoned preset drops
+        out, and an override with a new name is appended.
+
+        ``base_seed`` is the preset base; for a built-in vendor it defaults to
+        ``_preset_seed(pid)``, and a custom provider passes ``[]`` (no presets,
+        so its overrides are simply its whole list)."""
+        if catalog_map is None:
+            catalog_map = model_catalog.get_catalog_map()
+        if hidden_map is None:
+            hidden_map = model_catalog.get_hidden_map()
+        overrides = catalog_map.get(pid) or []
+        hidden = set(hidden_map.get(pid) or [])
+        if base_seed is None:
+            base_seed = [] if pid == "custom" else cls._preset_seed(pid)
+
+        override_by_name = {e["name"]: e for e in overrides}
+        merged: "OrderedDict[str, dict]" = OrderedDict()
+        for entry in base_seed:
+            name = entry.get("name")
+            if not name or name in hidden:
+                continue
+            merged[name] = override_by_name.get(name, entry)
+        # Appended models (overrides the presets don't carry), order preserved.
+        for entry in overrides:
+            name = entry.get("name")
+            if name and name not in merged:
+                merged[name] = entry
         return list(merged.values())
 
     def GET(self):
@@ -4883,7 +4947,8 @@ class ModelsHandler:
         if provider_id not in ConfigHandler.PROVIDER_MODELS and not provider_id.startswith("custom:"):
             return json.dumps({"status": "error", "message": f"unknown provider: {provider_id}"})
         try:
-            entries = model_catalog.save_catalog(provider_id, data.get("models"))
+            entries = model_catalog.save_catalog(
+                provider_id, data.get("models"), data.get("hidden"))
         except ValueError as e:
             return json.dumps({"status": "error", "message": str(e)})
         logger.info(f"[ModelsHandler] catalog saved: provider={provider_id} models={len(entries)}")
@@ -8224,6 +8289,7 @@ def _session_model_catalog() -> List[dict]:
         active_provider = "linkai"
     active_model = str(local_config.get("model") or "").strip()
     catalog_map = model_catalog.get_catalog_map()
+    hidden_map = model_catalog.get_hidden_map()
 
     catalog: List[dict] = []
     for pid, pinfo in ConfigHandler.PROVIDER_MODELS.items():
@@ -8233,11 +8299,13 @@ def _session_model_catalog() -> List[dict]:
         has_key = bool(key_field and str(local_config.get(key_field) or "").strip())
         if not has_key and pid != active_provider:
             continue
-        # A provider catalog replaces the preset list, filtered to entries
-        # tagged "text" — only those belong in the conversation switcher.
-        entries = catalog_map.get(pid)
-        if entries:
-            models = [e["name"] for e in entries if "text" in (e.get("capabilities") or [])]
+        # Overlay onto the presets, then keep only text-tagged entries — only
+        # those belong in the conversation switcher. Without an overlay this is
+        # just the preset model list.
+        if catalog_map.get(pid) or hidden_map.get(pid):
+            effective = ModelsHandler._merged_catalog(
+                pid, ModelsHandler._preset_seed(pid), catalog_map, hidden_map)
+            models = [e["name"] for e in effective if "text" in (e.get("capabilities") or [])]
         else:
             models = list(pinfo["models"])
         if not models:
@@ -8267,8 +8335,12 @@ def _session_model_catalog() -> List[dict]:
                 continue
             pid = f"custom:{cid}"
             is_active = pid == active_provider
-            has_key = bool(str(cp.get("api_key") or "").strip())
-            if not has_key and not is_active:
+            # Mirror the config page's "configured" test (_custom_provider_cards):
+            # a keyless-but-based endpoint (self-hosted / gateway) is valid, so
+            # having an api_base counts just like having a key.
+            configured = bool(str(cp.get("api_base") or "").strip()) \
+                or bool(str(cp.get("api_key") or "").strip())
+            if not configured and not is_active:
                 continue
             entries = catalog_map.get(pid)
             if entries:

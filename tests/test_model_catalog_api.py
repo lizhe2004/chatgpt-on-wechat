@@ -1,14 +1,19 @@
 # encoding:utf-8
-"""The catalog editor's backend contract: seed rows, save, and clear.
+"""The catalog editor's backend contract, for the OVERLAY model.
 
-The web console builds its editor from two fields the models API already
-returns per provider -- ``catalog`` (what the user saved) and ``seed`` (the
-vendor's presets, typed with their real capabilities). These tests pin that
-contract, plus the save handler the editor posts to.
+A provider's catalog is an overlay on its presets, not a replacement:
+- ``seed`` is the preset base (typed with real capabilities),
+- ``catalog`` is the user's overrides, ``hidden`` the removed presets,
+- ``effective`` is the merged list the editor loads.
+
+These tests pin that contract, the overlay storage roundtrip, and the merge
+that layers overrides onto the presets while dropping tombstoned models.
 """
 
 import os
+import shutil
 import sys
+import tempfile
 import types
 import unittest
 from unittest.mock import patch
@@ -35,25 +40,28 @@ if "web" not in sys.modules:
     sys.modules["web"] = web_stub
 
 
-def _providers_with(config):
+def _providers_with(config, catalog_map=None, hidden_map=None):
     """Provider overview rows, as the models API returns them."""
     from channel.web import web_channel
 
     with patch.object(web_channel, "conf", return_value=config), \
             patch("models.custom_provider.conf", return_value=config), \
-            patch("channel.web.web_channel.model_catalog.get_catalog_map", return_value={}):
+            patch("channel.web.web_channel.model_catalog.get_catalog_map",
+                  return_value=catalog_map or {}), \
+            patch("channel.web.web_channel.model_catalog.get_hidden_map",
+                  return_value=hidden_map or {}):
         return web_channel.ModelsHandler._provider_overview()
 
 
-def _provider(config, pid):
-    for p in _providers_with(config):
+def _provider(config, pid, catalog_map=None, hidden_map=None):
+    for p in _providers_with(config, catalog_map, hidden_map):
         if p["id"] == pid:
             return p
     return None
 
 
 class TestSeedRows(unittest.TestCase):
-    """`seed` gives the editor starting rows typed with real capabilities."""
+    """`seed` gives the editor the preset base typed with real capabilities."""
 
     def test_a_builtin_vendor_seeds_its_preset_models(self):
         p = _provider({"zhipu_ai_api_key": "sk-x"}, "zhipu")
@@ -63,8 +71,6 @@ class TestSeedRows(unittest.TestCase):
         self.assertIn("glm-5.2", names)
 
     def test_every_seed_row_carries_at_least_one_tag(self):
-        """The editor shows capabilities as toggle chips, so an untagged row
-        would render as a model the UI cannot place anywhere."""
         p = _provider({"zhipu_ai_api_key": "sk-x"}, "zhipu")
         for entry in p["seed"]:
             self.assertTrue(
@@ -73,9 +79,6 @@ class TestSeedRows(unittest.TestCase):
             )
 
     def test_only_conversational_presets_are_tagged_text(self):
-        """A tag is a routing decision, not decoration: an ASR-only preset
-        must NOT claim 'text', or it would surface in the main-model
-        dropdown where it cannot serve a chat turn."""
         p = _provider({"zhipu_ai_api_key": "sk-x"}, "zhipu")
         asr_only = [e for e in p["seed"] if e["capabilities"] == ["asr"]]
         self.assertTrue(asr_only, "expected at least one ASR-only preset")
@@ -83,8 +86,6 @@ class TestSeedRows(unittest.TestCase):
             self.assertNotIn("text", entry["capabilities"])
 
     def test_a_model_listed_for_two_roles_carries_both_tags(self):
-        """Membership in the capability lists is the type, and the tags
-        merge -- a VL model is text + vision, not one or the other."""
         p = _provider({"open_ai_api_key": "sk-x"}, "openai")
         by_name = {e["name"]: e for e in p["seed"]}
         vl = next((e for n, e in by_name.items()
@@ -92,45 +93,82 @@ class TestSeedRows(unittest.TestCase):
         self.assertIsNotNone(vl, "no OpenAI preset carries both text+vision")
 
     def test_the_legacy_custom_card_has_no_seed(self):
-        """The bare 'custom' card is a free-form endpoint: there is nothing
-        to seed, so the editor must start empty rather than guess."""
         p = _provider({"custom_api_key": "sk-x"}, "custom")
         if p:  # hidden in multi-provider mode; only assert when present
             self.assertEqual(p["seed"], [])
 
 
-class TestCatalogField(unittest.TestCase):
-    """`catalog` is what the user saved -- empty means 'presets in use'."""
+class TestEffectiveAndOverlayFields(unittest.TestCase):
+    """The editor loads `effective` and diffs against `seed`/`catalog`."""
 
-    def test_without_a_catalog_the_field_is_empty(self):
+    def test_without_an_overlay_effective_equals_the_presets(self):
         p = _provider({"zhipu_ai_api_key": "sk-x"}, "zhipu")
         self.assertFalse(p["catalog"])
+        self.assertFalse(p["hidden"])
+        self.assertEqual(
+            [e["name"] for e in p["effective"]],
+            [e["name"] for e in p["seed"]],
+        )
 
-    def test_a_saved_catalog_is_returned_for_the_editor_to_load(self):
-        saved = [{"name": "glm-5.2", "capabilities": ["text"], "context_window": 200000}]
+    def test_an_override_replaces_only_that_models_metadata(self):
+        """The other presets stay on the effective list — an overlay adds to
+        the presets, it does not wipe them."""
+        override = [{"name": "glm-5.2", "capabilities": ["text"], "context_window": 200000}]
+        p = _provider({"zhipu_ai_api_key": "sk-x"}, "zhipu",
+                      catalog_map={"zhipu": override})
+        names = [e["name"] for e in p["effective"]]
+        # Every preset is still present...
+        for s in p["seed"]:
+            self.assertIn(s["name"], names)
+        # ...but glm-5.2 now carries the user's window.
+        g52 = next(e for e in p["effective"] if e["name"] == "glm-5.2")
+        self.assertEqual(g52["context_window"], 200000)
+
+    def test_a_hidden_preset_drops_out_of_the_effective_list(self):
+        p = _provider({"zhipu_ai_api_key": "sk-x"}, "zhipu",
+                      hidden_map={"zhipu": ["glm-5.2"]})
+        names = [e["name"] for e in p["effective"]]
+        self.assertNotIn("glm-5.2", names)
+
+    def test_a_new_override_is_appended_to_the_presets(self):
+        override = [{"name": "brand-new-model", "capabilities": ["text"]}]
+        p = _provider({"zhipu_ai_api_key": "sk-x"}, "zhipu",
+                      catalog_map={"zhipu": override})
+        names = [e["name"] for e in p["effective"]]
+        self.assertIn("brand-new-model", names)
+        self.assertGreater(len(names), 1, "presets must still be present")
+
+    def test_models_field_follows_the_effective_list(self):
+        override = [{"name": "brand-new-model", "capabilities": ["text"]}]
+        p = _provider({"zhipu_ai_api_key": "sk-x"}, "zhipu",
+                      catalog_map={"zhipu": override})
+        self.assertIn("brand-new-model", p["models"])
+
+
+class TestApplyCatalogFiltersByCapability(unittest.TestCase):
+    """The chat dropdown only offers text-tagged models from the overlay."""
+
+    def test_no_overlay_keeps_the_preset_dropdown(self):
         from channel.web import web_channel
 
-        with patch.object(web_channel, "conf", return_value={"zhipu_ai_api_key": "sk-x"}), \
-                patch("models.custom_provider.conf", return_value={"zhipu_ai_api_key": "sk-x"}), \
-                patch("channel.web.web_channel.model_catalog.get_catalog_map",
-                      return_value={"zhipu": saved}):
-            rows = web_channel.ModelsHandler._provider_overview()
-        p = next(x for x in rows if x["id"] == "zhipu")
-        self.assertEqual(len(p["catalog"]), 1)
-        self.assertEqual(p["catalog"][0]["name"], "glm-5.2")
+        presets = {"zhipu": [{"value": "glm-5.2"}]}
+        with patch("channel.web.web_channel.model_catalog.get_catalog_map", return_value={}), \
+                patch("channel.web.web_channel.model_catalog.get_hidden_map", return_value={}):
+            out = web_channel.ModelsHandler._apply_catalog(presets, "text")
+        self.assertEqual(out["zhipu"], [{"value": "glm-5.2"}])
 
-    def test_a_catalog_replaces_the_preset_model_list(self):
-        """The whole point of the field: the dropdown follows the catalog."""
-        saved = [{"name": "only-this-one", "capabilities": ["text"]}]
+    def test_overlay_narrows_to_text_tagged_effective_models(self):
         from channel.web import web_channel
 
-        with patch.object(web_channel, "conf", return_value={"zhipu_ai_api_key": "sk-x"}), \
-                patch("models.custom_provider.conf", return_value={"zhipu_ai_api_key": "sk-x"}), \
-                patch("channel.web.web_channel.model_catalog.get_catalog_map",
-                      return_value={"zhipu": saved}):
-            rows = web_channel.ModelsHandler._provider_overview()
-        p = next(x for x in rows if x["id"] == "zhipu")
-        self.assertEqual(p["models"], ["only-this-one"])
+        override = [{"name": "chat-only", "capabilities": ["text"]},
+                    {"name": "vec", "capabilities": ["embedding"]}]
+        with patch("channel.web.web_channel.model_catalog.get_catalog_map",
+                   return_value={"zhipu": override}), \
+                patch("channel.web.web_channel.model_catalog.get_hidden_map", return_value={}):
+            out = web_channel.ModelsHandler._apply_catalog({}, "text")
+        names = [m["value"] for m in out["zhipu"]]
+        self.assertIn("chat-only", names)
+        self.assertNotIn("vec", names, "embedding-only model must not reach the chat dropdown")
 
 
 class TestSaveCatalogHandler(unittest.TestCase):
@@ -149,16 +187,19 @@ class TestSaveCatalogHandler(unittest.TestCase):
         data = json.loads(raw)
         return data, save
 
-    def test_a_valid_catalog_saves(self):
+    def test_a_valid_overlay_saves(self):
         data, save = self._post({
             "provider_id": "zhipu",
             "models": [{"name": "glm-5.2", "capabilities": ["text"]}],
+            "hidden": ["glm-4.7"],
         })
         self.assertEqual(data["status"], "success")
         save.assert_called_once()
+        # hidden is forwarded to the storage layer.
+        self.assertEqual(save.call_args[0][2], ["glm-4.7"])
 
-    def test_an_empty_list_clears_the_catalog_back_to_presets(self):
-        data, _ = self._post({"provider_id": "zhipu", "models": []})
+    def test_an_empty_overlay_clears_back_to_presets(self):
+        data, _ = self._post({"provider_id": "zhipu", "models": [], "hidden": []})
         self.assertEqual(data["status"], "success")
 
     def test_a_missing_provider_id_is_rejected(self):
@@ -171,9 +212,147 @@ class TestSaveCatalogHandler(unittest.TestCase):
         self.assertEqual(data["status"], "error")
 
     def test_a_custom_provider_id_is_accepted(self):
-        """Expanded custom (OpenAI-compatible) providers are cataloguable."""
         data, _ = self._post({"provider_id": "custom:3f2a9c1b", "models": []})
         self.assertEqual(data["status"], "success")
+
+
+class TestOverlayStorage(unittest.TestCase):
+    """The storage layer roundtrips overrides + hidden to system/models.json."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cow_catalog_")
+        # The store lives at <shared workspace>/system/models.json; point that
+        # workspace at a temp dir so the test never touches a real one.
+        from common import state_dir
+        self._store = os.path.join(self.tmp, "system", "models.json")
+        self.patcher = patch.object(
+            state_dir, "models_catalog_file", return_value=state_dir.Path(self._store))
+        self.patcher.start()
+        from models import model_catalog
+        self.mc = model_catalog
+        self.mc._invalidate()
+
+    def tearDown(self):
+        self.patcher.stop()
+        self.mc._invalidate()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_it_writes_under_system_models_json(self):
+        self.mc.save_catalog("zhipu", [{"name": "m", "capabilities": ["text"]}], [])
+        self.assertTrue(os.path.exists(self._store))
+        self.assertTrue(self._store.endswith(os.path.join("system", "models.json")))
+
+    def test_it_does_not_touch_config_json(self):
+        self.mc.save_catalog("zhipu", [{"name": "m", "capabilities": ["text"]}], ["x"])
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "config.json")))
+
+    def test_overrides_and_hidden_roundtrip(self):
+        self.mc.save_catalog(
+            "zhipu",
+            [{"name": "glm-5.3", "capabilities": ["text"], "context_window": 2000000}],
+            ["glm-4.7"],
+        )
+        self.assertEqual(self.mc.get_catalog_map()["zhipu"][0]["context_window"], 2000000)
+        self.assertEqual(self.mc.get_hidden_map()["zhipu"], ["glm-4.7"])
+
+    def test_an_empty_overlay_drops_the_provider(self):
+        self.mc.save_catalog("zhipu", [{"name": "m", "capabilities": ["text"]}], [])
+        self.mc.save_catalog("zhipu", [], [])
+        self.assertNotIn("zhipu", self.mc.get_catalog_map())
+        self.assertNotIn("zhipu", self.mc.get_hidden_map())
+
+    def test_a_name_cannot_be_both_overridden_and_hidden(self):
+        """The override wins; the redundant tombstone is dropped."""
+        self.mc.save_catalog(
+            "zhipu", [{"name": "glm-5.2", "capabilities": ["text"]}], ["glm-5.2"])
+        self.assertEqual(self.mc.get_hidden_map().get("zhipu"), None)
+
+    def test_resolve_returns_override_but_not_untouched_presets(self):
+        """An untouched preset resolves to {} so the budget resolver falls back
+        to the code-side constants — a later constant bump still reaches it."""
+        self.mc.save_catalog(
+            "zhipu",
+            [{"name": "glm-5.3", "capabilities": ["text"], "context_window": 2000000}],
+            [],
+        )
+        self.assertEqual(
+            self.mc.resolve_model_meta("zhipu", "glm-5.3").get("context_window"), 2000000)
+        self.assertEqual(self.mc.resolve_model_meta("zhipu", "glm-5.2"), {})
+
+    def test_a_legacy_bare_list_doc_is_read_as_overrides(self):
+        """A hand-written models.json using the old bare-list shape still loads."""
+        import json
+
+        os.makedirs(os.path.dirname(self._store), exist_ok=True)
+        with open(self._store, "w") as f:
+            json.dump({"providers": {"zhipu": [{"name": "m", "capabilities": ["text"]}]}}, f)
+        self.mc._invalidate()
+        self.assertEqual(self.mc.get_catalog_map()["zhipu"][0]["name"], "m")
+
+
+class TestLegacyConfigMigration(unittest.TestCase):
+    """A pre-overlay config.json catalog is imported once, then removed."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="cow_catalog_")
+        self._store = os.path.join(self.tmp, "system", "models.json")
+        self._config = os.path.join(self.tmp, "config.json")
+        from common import state_dir
+        self.state_dir = state_dir
+        self.store_patcher = patch.object(
+            state_dir, "models_catalog_file", return_value=state_dir.Path(self._store))
+        self.store_patcher.start()
+        from models import model_catalog
+        self.mc = model_catalog
+        self.mc._invalidate()
+
+    def tearDown(self):
+        self.store_patcher.stop()
+        self.mc._invalidate()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _write_config(self, data):
+        import json
+        with open(self._config, "w") as f:
+            json.dump(data, f)
+
+    def test_legacy_catalog_migrates_to_overlay_and_is_stripped(self):
+        self._write_config({
+            "provider_model_catalog": {
+                "zhipu": [{"name": "glm-legacy", "capabilities": ["text"],
+                           "context_window": 999}]
+            }
+        })
+        live = {"provider_model_catalog": {
+            "zhipu": [{"name": "glm-legacy", "capabilities": ["text"],
+                       "context_window": 999}]}}
+        with patch("config.conf", return_value=live), \
+                patch("config.get_data_root", return_value=self.tmp):
+            got = self.mc.get_catalog_map()
+        # Migrated into the overlay store as an override...
+        self.assertEqual(got["zhipu"][0]["name"], "glm-legacy")
+        self.assertEqual(got["zhipu"][0]["context_window"], 999)
+        self.assertTrue(os.path.exists(self._store))
+        # ...and the legacy key removed from both the file and the live config.
+        import json
+        with open(self._config) as f:
+            self.assertNotIn("provider_model_catalog", json.load(f))
+        self.assertNotIn("provider_model_catalog", live)
+
+    def test_migration_does_not_run_when_overlay_already_exists(self):
+        import json
+        os.makedirs(os.path.dirname(self._store), exist_ok=True)
+        with open(self._store, "w") as f:
+            json.dump({"providers": {"zhipu": {
+                "overrides": [{"name": "keep", "capabilities": ["text"]}],
+                "hidden": []}}}, f)
+        self._write_config({"provider_model_catalog": {
+            "zhipu": [{"name": "should-not-win", "capabilities": ["text"]}]}})
+        with patch("config.conf", return_value={"provider_model_catalog": {
+                "zhipu": [{"name": "should-not-win", "capabilities": ["text"]}]}}), \
+                patch("config.get_data_root", return_value=self.tmp):
+            got = self.mc.get_catalog_map()
+        self.assertEqual(got["zhipu"][0]["name"], "keep")
 
 
 class TestCatalogNormalization(unittest.TestCase):
@@ -192,15 +371,12 @@ class TestCatalogNormalization(unittest.TestCase):
         self.assertEqual(entry["capabilities"], ["text"])
 
     def test_an_unknown_capability_is_dropped_not_rejected(self):
-        """Hand-edited config may carry a stray tag. Dropping it keeps the
-        model usable instead of failing the whole save over one bad tag."""
         from models import model_catalog
 
         entry = model_catalog.normalize_entry({"name": "m", "capabilities": ["text", "telepathy"]})
         self.assertEqual(entry["capabilities"], ["text"])
 
     def test_a_row_of_only_unknown_capabilities_falls_back_to_text(self):
-        """An empty tag set would make the model unreachable everywhere."""
         from models import model_catalog
 
         entry = model_catalog.normalize_entry({"name": "m", "capabilities": ["telepathy"]})
@@ -213,8 +389,6 @@ class TestCatalogNormalization(unittest.TestCase):
             model_catalog.normalize_entry({"name": "m", "context_window": 0})
 
     def test_an_unbudgeted_model_can_be_saved_without_numbers(self):
-        """Embedding/TTS/ASR/image models have no text budget. The editor
-        hides those inputs for them, so the entry must save fine without."""
         from models import model_catalog
 
         entry = model_catalog.normalize_entry(

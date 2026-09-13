@@ -96,16 +96,15 @@ const I18N = {
         models_base_default_hint: '留空将使用官方默认地址',
         models_catalog: '模型列表',
         models_catalog_advanced: '（高级 · 可选）',
-        models_catalog_hint: '可选高级项：预置模型无需在此添加。仅当你要覆盖某个模型的上下文窗口/最大输出，或添加预置之外的自定义模型时才需要。留空则沿用预置模型',
         models_tag_text: '文本模型',
         models_catalog_add: '添加模型',
         models_catalog_window: '上下文窗口',
         models_catalog_output: '最大输出',
-        models_catalog_empty: '尚未添加模型，当前使用预置列表',
+        models_catalog_empty: '尚未添加模型，当前使用内置列表',
         models_catalog_no_budget: '该模型类型不区分上下文窗口与最大输出',
-        models_catalog_custom_hint: '为这个自定义端点登记模型：登记后主模型下拉框改用列表选择，并可指定每个模型的能力、上下文窗口与最大输出。留空则仍用手动输入模型名',
+        models_catalog_custom_hint: '为自定义厂商添加模型列表，配置后可在对话页面下拉选择对应模型，留空则需要手动输入模型名称',
         models_catalog_name_ph: '模型名称',
-        models_catalog_reset: '恢复预置',
+        models_catalog_reset: '恢复默认',
         models_tag_chat: '主模型',
         models_tag_vision: '图像理解',
         models_tag_video: '视频理解',
@@ -608,16 +607,15 @@ const I18N = {
         models_base_default_hint: '留空將使用官方預設地址',
         models_catalog: '模型列表',
         models_catalog_advanced: '（高級 · 可選）',
-        models_catalog_hint: '可選高級項：預置模型無需在此新增。僅當你要覆蓋某個模型的上下文視窗/最大輸出，或新增預置之外的自訂模型時才需要。留空則沿用預置模型',
         models_tag_text: '文本模型',
         models_catalog_add: '新增模型',
         models_catalog_window: '上下文窗口',
         models_catalog_output: '最大輸出',
-        models_catalog_empty: '尚未新增模型，目前使用預置清單',
+        models_catalog_empty: '尚未新增模型，目前使用內建清單',
         models_catalog_no_budget: '該模型類型不區分上下文視窗與最大輸出',
-        models_catalog_custom_hint: '為這個自訂端點登記模型：登記後主模型下拉框改用列表選擇，並可指定每個模型的能力、上下文視窗與最大輸出。留空則仍用手動輸入模型名',
+        models_catalog_custom_hint: '為自訂廠商新增模型列表，設定後可在對話頁面下拉選擇對應模型，留空則需手動輸入模型名稱',
         models_catalog_name_ph: '模型名稱',
-        models_catalog_reset: '恢復預置',
+        models_catalog_reset: '恢復預設',
         models_tag_chat: '主模型',
         models_tag_vision: '圖像理解',
         models_tag_video: '影片理解',
@@ -1115,16 +1113,15 @@ const I18N = {
         models_base_default_hint: 'Leave blank to use the official default base URL',
         models_catalog: 'Model catalog',
         models_catalog_advanced: '(Advanced · optional)',
-        models_catalog_hint: 'Optional advanced setting: preset models don\'t need to be added here. Use it only to override a model\'s context window / max output, or to add a custom model beyond the presets. Leave empty to keep the presets',
         models_tag_text: 'Text',
         models_catalog_add: 'Add model',
         models_catalog_window: 'Context window',
         models_catalog_output: 'Max output',
-        models_catalog_empty: 'No models added yet — the preset list is in use',
+        models_catalog_empty: 'No models added yet — the built-in list is in use',
         models_catalog_no_budget: 'Context window and max output do not apply to this model type',
-        models_catalog_custom_hint: 'Register models for this endpoint: once registered the main-model field becomes a dropdown and each model can carry its own capabilities, context window and max output. Leave empty to keep typing a model name',
+        models_catalog_custom_hint: 'Add a model list for this custom provider so you can pick models from a dropdown on the chat page; leave empty to type the model name manually',
         models_catalog_name_ph: 'Model name',
-        models_catalog_reset: 'Restore presets',
+        models_catalog_reset: 'Restore defaults',
         models_tag_chat: 'Main Model',
         models_tag_vision: 'Image Understanding',
         models_tag_video: 'Video Understanding',
@@ -12558,6 +12555,17 @@ function openVendorModal(providerId, onSaved) {
         // "custom" entry creates a *new* custom provider via that modal —
         // this is how multiple OpenAI-compatible endpoints are added.
         const builtinProviders = modelsState.providers.filter(p => !isCustomProviderCard(p));
+        const unconfigured = builtinProviders.filter(p => !p.configured);
+
+        // Every built-in is already configured: there is nothing to add here,
+        // so go straight to the custom-provider modal and never show this one.
+        // (Doing it via a "default to custom" pick would leave this overlay
+        // visible behind the custom one — two stacked modals.)
+        if (!unconfigured.length) {
+            openCustomProviderModal('');
+            return;
+        }
+
         const pickerOpts = builtinProviders.map(p => ({
             value: p.id,
             label: localizedLabel(p.label),
@@ -12571,8 +12579,7 @@ function openVendorModal(providerId, onSaved) {
         // "Custom" always behaves as an add-new action (multiple entries
         // allowed), so it shows a + mark instead of the configured ✓.
         pickerOpts.forEach(o => { if (o.value === 'custom') { o._isAddNew = true; o._configured = false; } });
-        const unconfigured = builtinProviders.filter(p => !p.configured);
-        const defaultId = (unconfigured[0] && unconfigured[0].id) || (builtinProviders[0] && builtinProviders[0].id) || 'custom';
+        const defaultId = unconfigured[0].id;
         pickerWrap.classList.remove('hidden');
         const pickerEl = document.getElementById('vendor-modal-picker');
         const onPick = (val) => {
@@ -12841,23 +12848,18 @@ function removeCatalogRow(prefix, idx) {
     renderCatalogRows(prefix);
 }
 
-/** Seed the draft from the vendor's presets so editing starts from reality. */
+/** Reset the draft to the vendor's presets: discard every override and
+ *  un-hide every removed preset, so the list is exactly what ships in code.
+ *  Saving afterwards clears the provider's overlay entirely. */
 function seedCatalogFromPresets(prefix, providerId) {
     const meta = modelsState.providers.find(p => p.id === providerId);
     const seed = (meta && meta.seed) || [];
-    if (!seed.length) return;
-    const draft = _catalogRows(prefix);
-    const seen = new Set(draft.map(e => e.name).filter(Boolean));
-    seed.forEach(s => {
-        if (seen.has(s.name)) return;
-        seen.add(s.name);
-        draft.push({
-            name: s.name,
-            capabilities: (s.capabilities || []).slice(),
-            context_window: s.context_window || '',
-            max_output_tokens: s.max_output_tokens || '',
-        });
-    });
+    catalogDrafts[prefix] = seed.map(s => ({
+        name: s.name,
+        capabilities: (s.capabilities || []).slice(),
+        context_window: s.context_window || '',
+        max_output_tokens: s.max_output_tokens || '',
+    }));
     renderCatalogRows(prefix);
 }
 
@@ -12890,11 +12892,24 @@ function collectCatalogPayload(prefix) {
         });
 }
 
-/** Load one provider's saved catalog (or an empty draft) into a modal. */
+// The preset base for one modal, kept so save can diff the draft against it
+// (only rows that differ from a preset, or are new, are persisted; presets the
+// user removed become tombstones). Keyed by modal prefix like the drafts.
+const catalogSeeds = {};
+
+/** Load one provider's effective model list (presets + overrides − removals)
+ *  into a modal. The list is shown in full so editing one model can no longer
+ *  wipe the rest — nothing is persisted until the user saves. */
 function fillCatalogForProvider(prefix, providerId) {
     const meta = modelsState.providers.find(p => p.id === providerId);
-    const saved = (meta && meta.catalog) || [];
-    catalogDrafts[prefix] = saved.map(e => ({
+    const effective = (meta && meta.effective) || (meta && meta.catalog) || [];
+    catalogSeeds[prefix] = ((meta && meta.seed) || []).map(e => ({
+        name: e.name || '',
+        capabilities: (e.capabilities || []).slice(),
+        context_window: e.context_window || '',
+        max_output_tokens: e.max_output_tokens || '',
+    }));
+    catalogDrafts[prefix] = effective.map(e => ({
         name: e.name || '',
         capabilities: (e.capabilities || []).slice(),
         context_window: e.context_window || '',
@@ -12902,9 +12917,35 @@ function fillCatalogForProvider(prefix, providerId) {
     }));
     renderCatalogRows(prefix);
 
-    // Existing rows imply the user has already opted in — show them expanded.
-    // Otherwise keep the section collapsed so credentials stay the focus.
-    setCatalogSectionOpen(prefix, catalogDrafts[prefix].length > 0);
+    // A saved overlay (the effective list diverges from the presets) implies
+    // the user has already opted in — show it expanded. A pristine provider
+    // stays collapsed so credentials stay the focus.
+    const hasOverlay = !catalogDraftMatchesSeed(prefix);
+    setCatalogSectionOpen(prefix, hasOverlay);
+}
+
+/** True when the draft is byte-for-byte the provider's presets (no overlay). */
+function catalogDraftMatchesSeed(prefix) {
+    return JSON.stringify(collectCatalogPayload(prefix))
+        === JSON.stringify(_normalizeEntries(catalogSeeds[prefix] || []));
+}
+
+/** Normalize seed rows into the same payload shape collectCatalogPayload emits,
+ *  so the two can be compared for equality. */
+function _normalizeEntries(rows) {
+    return rows
+        .filter(e => (e.name || '').trim())
+        .map(e => {
+            const out = {
+                name: e.name.trim(),
+                capabilities: (e.capabilities || []).length ? e.capabilities : ['text'],
+            };
+            const cw = parseInt(e.context_window, 10);
+            const mo = parseInt(e.max_output_tokens, 10);
+            if (!Number.isNaN(cw) && cw > 0) out.context_window = cw;
+            if (!Number.isNaN(mo) && mo > 0) out.max_output_tokens = mo;
+            return out;
+        });
 }
 
 function setCatalogSectionOpen(prefix, open) {
@@ -12932,25 +12973,57 @@ function bindCatalogControls(prefix, providerIdForSeed) {
 }
 
 /**
- * Persist a modal's draft, or do nothing when it is untouched.
- *
- * The catalog replaces the provider's preset model list wholesale, so sending
- * it on every credentials save would silently wipe a list the user never
- * opened. We only write when the draft differs from what is stored.
+ * Diff the draft against the provider's presets into the overlay the backend
+ * stores: `overrides` (rows the user changed or added) and `hidden` (preset
+ * names the user removed). A row identical to its preset is NOT persisted, so
+ * that model keeps following the code-side metadata and a later constant bump
+ * still reaches it.
+ */
+function diffCatalogAgainstSeed(prefix) {
+    const seed = _normalizeEntries(catalogSeeds[prefix] || []);
+    const draft = collectCatalogPayload(prefix);
+    const seedByName = {};
+    seed.forEach(e => { seedByName[e.name] = e; });
+    const draftNames = new Set(draft.map(e => e.name));
+
+    const overrides = draft.filter(e => {
+        const preset = seedByName[e.name];
+        // New model, or a preset the user edited: persist it. An unchanged
+        // preset (deep-equal) is left out so it stays code-driven.
+        return !preset || JSON.stringify(preset) !== JSON.stringify(e);
+    });
+    // Presets the user removed from the list become tombstones.
+    const hidden = seed
+        .map(e => e.name)
+        .filter(name => !draftNames.has(name));
+    return { overrides, hidden };
+}
+
+/**
+ * Persist a modal's overlay, or do nothing when the draft still equals the
+ * provider's effective list. Only the diff from the presets is written, so a
+ * provider the user never opened is never touched.
  */
 function saveCatalogForProvider(prefix, providerId) {
     const meta = modelsState.providers.find(p => p.id === providerId);
-    const saved = (meta && meta.catalog) || [];
-    const next = collectCatalogPayload(prefix);
-    if (JSON.stringify(next) === JSON.stringify(saved)) {
+    const savedOverrides = (meta && meta.catalog) || [];
+    const savedHidden = (meta && meta.hidden) || [];
+    const { overrides, hidden } = diffCatalogAgainstSeed(prefix);
+
+    const same = JSON.stringify(overrides) === JSON.stringify(_normalizeEntries(savedOverrides))
+        && JSON.stringify([...hidden].sort()) === JSON.stringify([...savedHidden].sort());
+    if (same) {
         return Promise.resolve(true);
     }
-    // An emptied draft means "back to presets" — save_catalog clears the key
-    // for an empty list, which is exactly that intent.
+    // Empty overrides + empty hidden means "back to presets" — save_catalog
+    // drops the provider's overlay for that, which is exactly the intent.
     return fetch('/api/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'save_catalog', provider_id: providerId, models: next }),
+        body: JSON.stringify({
+            action: 'save_catalog', provider_id: providerId,
+            models: overrides, hidden: hidden,
+        }),
     }).then(r => r.json()).then(data => data.status === 'success').catch(() => false);
 }
 
