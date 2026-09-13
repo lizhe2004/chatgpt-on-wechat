@@ -101,6 +101,11 @@ const I18N = {
         models_catalog_add: '添加模型',
         models_catalog_window: '上下文窗口',
         models_catalog_output: '最大输出',
+        models_catalog_empty: '尚未添加模型，当前使用预置列表',
+        models_catalog_no_budget: '该模型类型不区分上下文窗口与最大输出',
+        models_catalog_custom_hint: '为这个自定义端点登记模型：登记后主模型下拉框改用列表选择，并可指定每个模型的能力、上下文窗口与最大输出。留空则仍用手动输入模型名',
+        models_catalog_name_ph: '模型名称',
+        models_catalog_reset: '恢复预置',
         models_tag_chat: '主模型',
         models_tag_vision: '图像理解',
         models_tag_video: '视频理解',
@@ -608,6 +613,11 @@ const I18N = {
         models_catalog_add: '新增模型',
         models_catalog_window: '上下文窗口',
         models_catalog_output: '最大輸出',
+        models_catalog_empty: '尚未新增模型，目前使用預置清單',
+        models_catalog_no_budget: '該模型類型不區分上下文視窗與最大輸出',
+        models_catalog_custom_hint: '為這個自訂端點登記模型：登記後主模型下拉框改用列表選擇，並可指定每個模型的能力、上下文視窗與最大輸出。留空則仍用手動輸入模型名',
+        models_catalog_name_ph: '模型名稱',
+        models_catalog_reset: '恢復預置',
         models_tag_chat: '主模型',
         models_tag_vision: '圖像理解',
         models_tag_video: '影片理解',
@@ -1110,6 +1120,11 @@ const I18N = {
         models_catalog_add: 'Add model',
         models_catalog_window: 'Context window',
         models_catalog_output: 'Max output',
+        models_catalog_empty: 'No models added yet — the preset list is in use',
+        models_catalog_no_budget: 'Context window and max output do not apply to this model type',
+        models_catalog_custom_hint: 'Register models for this endpoint: once registered the main-model field becomes a dropdown and each model can carry its own capabilities, context window and max output. Leave empty to keep typing a model name',
+        models_catalog_name_ph: 'Model name',
+        models_catalog_reset: 'Restore presets',
         models_tag_chat: 'Main Model',
         models_tag_vision: 'Image Understanding',
         models_tag_video: 'Video Understanding',
@@ -12583,6 +12598,9 @@ function openVendorModal(providerId, onSaved) {
 
     document.getElementById('vendor-modal-cancel').onclick = closeVendorModal;
     document.getElementById('vendor-modal-save').onclick = saveVendorModal;
+    // Catalog section controls. Assigned (not addEventListener) so a repeated
+    // open cannot stack duplicate handlers.
+    bindCatalogControls('vendor-modal', vendorModalState.providerId);
     clearBtn.onclick = clearVendorModal;
 
     // Once the user edits the masked value, drop the "masked sentinel" dataset
@@ -12655,11 +12673,285 @@ function fillVendorModalForProvider(providerId) {
     const clearBtn = document.getElementById('vendor-modal-clear');
     clearBtn.classList.toggle('hidden', !meta.configured);
 
+    // Model catalog rows belong to the provider, so they load with it.
+    fillCatalogForProvider('vendor-modal', providerId);
+
     vendorModalState.providerId = providerId;
 }
 
 function closeVendorModal() {
     document.getElementById('vendor-modal-overlay').classList.add('hidden');
+}
+
+// ---------- Model catalog editor (advanced, optional) -------------------
+//
+// A provider's catalog REPLACES its preset model list, so the editor is opt-in:
+// rows only exist once the user adds them (or seeds them from the presets with
+// the "restore presets" action). An empty row set is left untouched on save —
+// it must never silently overwrite a working preset list.
+//
+// The same rows are offered by two modals — the built-in vendor modal and the
+// custom (OpenAI-compatible) provider modal — so every helper takes an element
+// id prefix instead of hardcoding one.
+
+// Mirrors models/model_catalog.py VALID_CAPABILITIES. "text" drives the main
+// model dropdown, the rest route a model into the matching tool position.
+const MODEL_CATALOG_CAPABILITIES = ['text', 'vision', 'video', 'image', 'embedding', 'asr', 'tts'];
+
+const MODEL_CATALOG_TAG_KEYS = {
+    text: 'models_tag_chat',
+    vision: 'models_tag_vision',
+    video: 'models_tag_video',
+    image: 'models_tag_image',
+    embedding: 'models_tag_embedding',
+    asr: 'models_tag_asr',
+    tts: 'models_tag_tts',
+};
+
+// Capabilities with no notion of a text budget: an embedding model is scored
+// on dimensions and a TTS/ASR one on audio, so offering "context window" for
+// them would invite values that mean nothing.
+const MODEL_CATALOG_UNBUDGETED = ['embedding', 'image', 'asr', 'tts'];
+
+// Draft rows keyed by modal prefix, so the two editors never share state.
+const catalogDrafts = {};
+
+function _catalogRows(prefix) {
+    if (!catalogDrafts[prefix]) catalogDrafts[prefix] = [];
+    return catalogDrafts[prefix];
+}
+
+function _catalogCapLabel(cap) {
+    const key = MODEL_CATALOG_TAG_KEYS[cap];
+    return key ? t(key) : cap;
+}
+
+/** Render the draft rows for one modal. Each row edits one model entry. */
+function renderCatalogRows(prefix) {
+    const draft = _catalogRows(prefix);
+    const rows = document.getElementById(prefix + '-catalog-rows');
+    if (!rows) return;
+    rows.innerHTML = draft.map((entry, idx) => `
+        <div class="rounded-lg border border-slate-200 dark:border-white/10 bg-slate-50 dark:bg-white/5 p-2.5">
+            <div class="flex items-center gap-2 mb-2">
+                <input type="text" value="${escapeHtml(entry.name || '')}"
+                       placeholder="${escapeHtml(t('models_catalog_name_ph'))}"
+                       oninput="updateCatalogRow('${prefix}', ${idx}, 'name', this.value)"
+                       class="flex-1 min-w-0 px-2 py-1.5 rounded border border-slate-200 dark:border-slate-600
+                              bg-white dark:bg-white/5 text-xs text-slate-800 dark:text-slate-100
+                              focus:outline-none focus:border-primary-500 font-mono transition-colors">
+                <button type="button" onclick="removeCatalogRow('${prefix}', ${idx})"
+                        title="${escapeHtml(t('delete'))}"
+                        class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded
+                               text-slate-400 dark:text-slate-500 hover:text-red-500 hover:bg-red-50
+                               dark:hover:bg-red-900/20 cursor-pointer transition-colors">
+                    <i class="fas fa-trash-can text-[11px]"></i>
+                </button>
+            </div>
+            <div class="flex flex-wrap gap-1.5 mb-2">
+                ${MODEL_CATALOG_CAPABILITIES.map(cap => {
+                    const on = (entry.capabilities || []).includes(cap);
+                    return `<button type="button" onclick="toggleCatalogCap('${prefix}', ${idx}, '${cap}')"
+                            class="px-1.5 py-0.5 rounded text-[10px] font-medium cursor-pointer transition-colors
+                                   ${on
+                                       ? 'bg-primary-100 dark:bg-primary-900/40 text-primary-600 dark:text-primary-400'
+                                       : 'bg-slate-200/60 dark:bg-white/10 text-slate-500 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-white/20'}">
+                            ${escapeHtml(_catalogCapLabel(cap))}</button>`;
+                }).join('')}
+            </div>
+            ${(() => {
+                // A model tagged only for unbudgeted work (embedding, TTS, ...)
+                // has no window/output to configure — showing the inputs would
+                // just invite meaningless numbers.
+                const caps = entry.capabilities || [];
+                const budgeted = caps.length === 0
+                    || caps.some(c => !MODEL_CATALOG_UNBUDGETED.includes(c));
+                if (!budgeted) {
+                    return `<p class="text-[10px] text-slate-400 dark:text-slate-500">
+                            <i class="fas fa-info-circle mr-1"></i>${escapeHtml(t('models_catalog_no_budget'))}</p>`;
+                }
+                return `<div class="grid grid-cols-2 gap-2">
+                    <label class="block">
+                        <span class="block text-[10px] text-slate-400 dark:text-slate-500 mb-0.5">${escapeHtml(t('models_catalog_window'))}</span>
+                        <input type="number" min="1" value="${entry.context_window || ''}" placeholder="—"
+                               oninput="updateCatalogRow('${prefix}', ${idx}, 'context_window', this.value)"
+                               class="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-600
+                                      bg-white dark:bg-white/5 text-xs text-slate-800 dark:text-slate-100
+                                      focus:outline-none focus:border-primary-500 transition-colors">
+                    </label>
+                    <label class="block">
+                        <span class="block text-[10px] text-slate-400 dark:text-slate-500 mb-0.5">${escapeHtml(t('models_catalog_output'))}</span>
+                        <input type="number" min="1" value="${entry.max_output_tokens || ''}" placeholder="—"
+                               oninput="updateCatalogRow('${prefix}', ${idx}, 'max_output_tokens', this.value)"
+                               class="w-full px-2 py-1 rounded border border-slate-200 dark:border-slate-600
+                                      bg-white dark:bg-white/5 text-xs text-slate-800 dark:text-slate-100
+                                      focus:outline-none focus:border-primary-500 transition-colors">
+                    </label>
+                </div>`;
+            })()}
+        </div>`).join('');
+
+    const empty = document.getElementById(prefix + '-catalog-empty');
+    if (empty) empty.classList.toggle('hidden', draft.length > 0);
+}
+
+function updateCatalogRow(prefix, idx, field, rawValue) {
+    const entry = _catalogRows(prefix)[idx];
+    if (!entry) return;
+    if (field === 'name') {
+        entry.name = rawValue;
+        return;
+    }
+    // Numeric fields: keep "" (meaning "unset") rather than storing NaN/0.
+    const n = parseInt(rawValue, 10);
+    entry[field] = (rawValue === '' || Number.isNaN(n)) ? '' : n;
+}
+
+function toggleCatalogCap(prefix, idx, cap) {
+    const entry = _catalogRows(prefix)[idx];
+    if (!entry) return;
+    const caps = entry.capabilities || [];
+    const at = caps.indexOf(cap);
+    if (at >= 0) caps.splice(at, 1); else caps.push(cap);
+    entry.capabilities = caps;
+    // The budget inputs are hidden for unbudgeted-only rows, but a hidden
+    // field would still be sent — clear it so the stored entry can't carry a
+    // window for a model that has no notion of one.
+    const budgeted = caps.length === 0
+        || caps.some(c => !MODEL_CATALOG_UNBUDGETED.includes(c));
+    if (!budgeted) {
+        entry.context_window = '';
+        entry.max_output_tokens = '';
+    }
+    renderCatalogRows(prefix);
+}
+
+function addCatalogRow(prefix) {
+    _catalogRows(prefix).push({
+        name: '', capabilities: ['text'], context_window: '', max_output_tokens: '',
+    });
+    renderCatalogRows(prefix);
+    const rows = document.getElementById(prefix + '-catalog-rows');
+    const last = rows && rows.lastElementChild && rows.lastElementChild.querySelector('input');
+    if (last) last.focus();
+}
+
+function removeCatalogRow(prefix, idx) {
+    _catalogRows(prefix).splice(idx, 1);
+    renderCatalogRows(prefix);
+}
+
+/** Seed the draft from the vendor's presets so editing starts from reality. */
+function seedCatalogFromPresets(prefix, providerId) {
+    const meta = modelsState.providers.find(p => p.id === providerId);
+    const seed = (meta && meta.seed) || [];
+    if (!seed.length) return;
+    const draft = _catalogRows(prefix);
+    const seen = new Set(draft.map(e => e.name).filter(Boolean));
+    seed.forEach(s => {
+        if (seen.has(s.name)) return;
+        seen.add(s.name);
+        draft.push({
+            name: s.name,
+            capabilities: (s.capabilities || []).slice(),
+            context_window: s.context_window || '',
+            max_output_tokens: s.max_output_tokens || '',
+        });
+    });
+    renderCatalogRows(prefix);
+}
+
+/** Drop every row (back to presets). Applied on save, not immediately. */
+function clearCatalogRows(prefix) {
+    catalogDrafts[prefix] = [];
+    renderCatalogRows(prefix);
+}
+
+/**
+ * Collect the draft into the payload shape `save_catalog` expects.
+ * Rows without a name are skipped — a nameless entry is rejected server-side
+ * and would fail the whole save, so it is dropped before we send anything.
+ */
+function collectCatalogPayload(prefix) {
+    return _catalogRows(prefix)
+        .filter(e => (e.name || '').trim())
+        .map(e => {
+            const out = {
+                name: e.name.trim(),
+                capabilities: (e.capabilities || []).length ? e.capabilities : ['text'],
+            };
+            const cw = parseInt(e.context_window, 10);
+            const mo = parseInt(e.max_output_tokens, 10);
+            // Only send the numbers when set: an absent field means "fall back
+            // to auto-detection", whereas 0 would be an invalid window.
+            if (!Number.isNaN(cw) && cw > 0) out.context_window = cw;
+            if (!Number.isNaN(mo) && mo > 0) out.max_output_tokens = mo;
+            return out;
+        });
+}
+
+/** Load one provider's saved catalog (or an empty draft) into a modal. */
+function fillCatalogForProvider(prefix, providerId) {
+    const meta = modelsState.providers.find(p => p.id === providerId);
+    const saved = (meta && meta.catalog) || [];
+    catalogDrafts[prefix] = saved.map(e => ({
+        name: e.name || '',
+        capabilities: (e.capabilities || []).slice(),
+        context_window: e.context_window || '',
+        max_output_tokens: e.max_output_tokens || '',
+    }));
+    renderCatalogRows(prefix);
+
+    // Existing rows imply the user has already opted in — show them expanded.
+    // Otherwise keep the section collapsed so credentials stay the focus.
+    setCatalogSectionOpen(prefix, catalogDrafts[prefix].length > 0);
+}
+
+function setCatalogSectionOpen(prefix, open) {
+    const body = document.getElementById(prefix + '-catalog-body');
+    const caret = document.getElementById(prefix + '-catalog-caret');
+    if (body) body.classList.toggle('hidden', !open);
+    if (caret) caret.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+}
+
+function toggleCatalogSection(prefix) {
+    const body = document.getElementById(prefix + '-catalog-body');
+    if (!body) return;
+    setCatalogSectionOpen(prefix, body.classList.contains('hidden'));
+}
+
+/** Wire the section to one modal. Assigned (not addEventListener) so a
+ *  repeated open cannot stack duplicate handlers. */
+function bindCatalogControls(prefix, providerIdForSeed) {
+    const toggle = document.getElementById(prefix + '-catalog-toggle');
+    const add = document.getElementById(prefix + '-catalog-add');
+    if (toggle) toggle.onclick = () => toggleCatalogSection(prefix);
+    if (add) add.onclick = () => addCatalogRow(prefix);
+    const seed = document.getElementById(prefix + '-catalog-seed');
+    if (seed) seed.onclick = () => seedCatalogFromPresets(prefix, providerIdForSeed);
+}
+
+/**
+ * Persist a modal's draft, or do nothing when it is untouched.
+ *
+ * The catalog replaces the provider's preset model list wholesale, so sending
+ * it on every credentials save would silently wipe a list the user never
+ * opened. We only write when the draft differs from what is stored.
+ */
+function saveCatalogForProvider(prefix, providerId) {
+    const meta = modelsState.providers.find(p => p.id === providerId);
+    const saved = (meta && meta.catalog) || [];
+    const next = collectCatalogPayload(prefix);
+    if (JSON.stringify(next) === JSON.stringify(saved)) {
+        return Promise.resolve(true);
+    }
+    // An emptied draft means "back to presets" — save_catalog clears the key
+    // for an empty list, which is exactly that intent.
+    return fetch('/api/models', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'save_catalog', provider_id: providerId, models: next }),
+    }).then(r => r.json()).then(data => data.status === 'success').catch(() => false);
 }
 
 function saveVendorModal() {
@@ -12692,12 +12984,19 @@ function saveVendorModal() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
     }).then(r => r.json()).then(data => {
-        btn.disabled = false;
         if (data.status !== 'success') {
+            btn.disabled = false;
             showStatus('vendor-modal-status', 'models_save_failed', true);
             return;
         }
-        const finish = () => {
+        // Credentials are stored; now the catalog, which the backend keeps as
+        // a separate document.
+        return saveCatalogForProvider('vendor-modal', providerId).then(ok => {
+            btn.disabled = false;
+            if (!ok) {
+                showStatus('vendor-modal-status', 'models_save_failed', true);
+                return;
+            }
             closeVendorModal();
             const onSaved = vendorModalState.onSaved;
             if (onSaved) {
@@ -12705,8 +13004,7 @@ function saveVendorModal() {
             } else {
                 loadModelsView();
             }
-        };
-        finish();
+        });
     }).catch(() => {
         btn.disabled = false;
         showStatus('vendor-modal-status', 'models_save_failed', true);
@@ -12803,6 +13101,14 @@ function openCustomProviderModal(providerId) {
         }
     }
     overlay.addEventListener('click', onOverlayClick);
+
+    // Model catalog rows: a custom endpoint has no preset list, so these are
+    // entirely user-authored. Only meaningful when editing an existing card —
+    // a brand new card has no provider id yet, so its rows are saved right
+    // after the provider is created (see saveCustomProviderModal).
+    bindCatalogControls('custom-provider', editing ? 'custom:' + providerId : '');
+    fillCatalogForProvider('custom-provider', editing ? 'custom:' + providerId : '');
+
     nameInput.focus();
 }
 
@@ -12856,13 +13162,23 @@ function saveCustomProviderModal() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
     }).then(r => r.json()).then(data => {
-        btn.disabled = false;
         if (data.status !== 'success') {
+            btn.disabled = false;
             showStatus('custom-provider-modal-status', 'models_save_failed', true);
             return;
         }
-        closeCustomProviderModal();
-        loadModelsView();
+        // The backend assigns the id on create, so the catalog can only be
+        // written once we know which provider it belongs to.
+        const finalId = data.id ? 'custom:' + data.id : ('custom:' + customProviderModalState.editId);
+        return saveCatalogForProvider('custom-provider', finalId).then(ok => {
+            btn.disabled = false;
+            if (!ok) {
+                showStatus('custom-provider-modal-status', 'models_save_failed', true);
+                return;
+            }
+            closeCustomProviderModal();
+            loadModelsView();
+        });
     }).catch(() => {
         btn.disabled = false;
         showStatus('custom-provider-modal-status', 'models_save_failed', true);
