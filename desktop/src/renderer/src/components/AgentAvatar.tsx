@@ -2,7 +2,6 @@ import React, { useState } from 'react'
 import apiClient from '../api/client'
 import type { AgentProfile } from '../types'
 import { useAgentStore, findAgent } from '../store/agentStore'
-import brandLogo from '../assets/logo.png'
 
 /**
  * An Agent's face: its uploaded image when it has one, else a tinted disc with
@@ -67,23 +66,21 @@ const AgentAvatar: React.FC<AgentAvatarProps> = ({ agent, size = 32, className =
   const px = { width: size, height: size }
   const id = agent?.id || ''
 
-  // The default (built-in) Agent has no uploaded avatar; show the CowAgent
-  // brand logo instead of a bare initial disc, so its face matches the app.
+  // The default (built-in) Agent has no uploaded avatar; wear the CowAgent
+  // brand logo instead of a bare initial disc, so its face matches the rest of
+  // the app. Use the same round logo.jpg the login/chat screens and web console
+  // use (not the wide-margin square logo.png), filled edge-to-edge with
+  // object-cover so a circle face reads as a clean disc, not an octagon.
   const isDefault = !!agent && !!defaultAgentId && agent.id === defaultAgentId
   if (!hasImage && isDefault) {
     return (
-      <span
+      <img
+        src="./logo.jpg"
+        alt={agent?.name || 'CowAgent'}
+        draggable={false}
         style={px}
-        className={`${radius} bg-surface-2 flex items-center justify-center flex-shrink-0 overflow-hidden ${className}`}
-      >
-        <img
-          src={brandLogo}
-          alt={agent?.name || 'CowAgent'}
-          draggable={false}
-          style={{ width: Math.round(size * 0.72), height: Math.round(size * 0.72) }}
-          className="object-contain"
-        />
-      </span>
+        className={`${radius} object-cover flex-shrink-0 ${className}`}
+      />
     )
   }
 
